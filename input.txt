@@ -1,4 +1,3 @@
-4
 red green blue yellow
-<red,blue,red,green>
-<red,green,red,blue>
+red red red red
+
