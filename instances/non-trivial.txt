@@ -1,0 +1,16 @@
+8
+red green blue yellow magenta black white cyan
+<red,blue,red,green>
+<red,green,yellow,blue>
+<magenta,black,white,cyan>
+<cyan,white,black,magenta>
+<blue,red,green,red>
+<green,yellow,blue,red>
+<black,magenta,cyan,white>
+<white,cyan,magenta,black>
+<yellow,blue,red,green>
+<blue,red,green,yellow>
+<black,magenta,cyan,white>
+<white,cyan,magenta,black>
+<green,yellow,blue,red>
+<magenta,black,white,cyan>
