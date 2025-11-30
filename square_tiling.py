@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
-import math
 from pathlib import Path
 import argparse
 import sys
-import re
 import subprocess
-import shutil
 import tempfile
 import os
+import re
+import math
 
 
 def read_instance_file(path: Path) -> str:
@@ -20,172 +19,168 @@ def read_instance_file(path: Path) -> str:
 
 def prepare_dimacs(raw_instance: str, k: int) -> str:
     inst = parse_instance(raw_instance)
-    dimacs, _mapping = encode_instance_to_dimacs(inst, k)
+    dimacs = encode_instance_to_dimacs(inst, k)
     return dimacs
 
 
-def encode_instance_to_dimacs(instance: dict, k: int) -> tuple[str, dict]:
-    """Encode the given instance to DIMACS format.
-    Returns a tuple of (dimacs_string, variable_mapping_dict).
+def encode_instance_to_dimacs(instance: dict, k: int) -> str:
+    """Encode the instance into DIMACS CNF and return (dimacs_str, mapping).
 
-    The variable_mapping_dict maps (i, j, tile_index) to DIMACS variable numbers.
-    The fact that on position (i, j) tile with index tile_index is encoded as zero-padded decimal number tripplets
+    For now this constructs variable names for the facts "on tile(i,j) is tile t"
+    using the convention <zeropadded_i><zeropadded_j><zeropadded_t> where the
+    padding widths are computed as follows (per user request):
+      - i and j are padded to ceil(log10(number of rows))
+      - t is padded to ceil(log10(number of colors))
+
+    The function returns an empty CNF (no clauses) together with a mapping
+    from variable name to DIMACS variable id. This is the first step requested
+    (variable naming / mapping); clause generation will be added later.
     """
-    colors = instance.get("colors", {})
+
+    # number of rows in the square grid
+    rows = int(k)
+    # number of colours declared in the instance (may be 0)
+    num_colors = max(1, len(instance.get("colors", {})))
+    # number of tile types provided by the instance
     tiles = instance.get("tiles", [])
+    num_tiles = max(0, len(tiles))
 
-    # count how large the decimal encoding needs to be
-    color_dec_len = math.ceil(math.log10(len(colors))) if colors else 0
-    tile_dec_len = math.ceil(math.log10(len(tiles))) if tiles else 0
-    var_mapping = {}
-    clauses = []
-    var_counter = 1
-    for i in range(k):
-        for j in range(k):
-            for t_index, tile in enumerate(tiles):
-                var_mapping[(i, j, t_index)] = var_counter
-                var_counter += 1
-            # Add clauses to ensure at least one tile is placed at (i, j)
-            clause = [var_mapping[(i, j, t_index)]
-                      for t_index in range(len(tiles))]
-            clauses.append(clause)
-            # Add clauses to ensure at most one tile is placed at (i, j)
-            for t1 in range(len(tiles)):
-                for t2 in range(t1 + 1, len(tiles)):
-                    clauses.append(
-                        [-var_mapping[(i, j, t1)], -var_mapping[(i, j, t2)]])
-    # Additional clauses to ensure adjacent tiles match colors can be added here.
-    dimacs_lines = [f"p cnf {var_counter - 1} {len(clauses)}"]
-    for clause in clauses:
-        dimacs_lines.append(" ".join(map(str, clause)) + " 0")
-    dimacs_str = "\n".join(dimacs_lines)
-    return dimacs_str, var_mapping
+    def _pad_width(n: int) -> int:
+        # follow the formula ceil(log10(n)) but ensure at least 1
+        if n <= 1:
+            return 1
+        return max(1, math.ceil(math.log10(n)))
+
+    w_i = _pad_width(rows+1)
+    w_j = _pad_width(rows+1)
+    # per the user's instruction use number of colours to size the tile index
+    w_t = _pad_width(num_colors+1)
+
+    def var_name(i: int, j: int, t: int) -> str:
+        """Return the variable name for position (i,j) and tile index t.
+
+        i, j, t are zero-based indices; produced name uses 1-based values
+        but zero-padded according to computed widths.
+        """
+        si = str(i + 1).zfill(w_i)
+        sj = str(j + 1).zfill(w_j)
+        st = str(t + 1).zfill(w_t)
+        return f"{si}{sj}{st}"
+
+    # number of propositional variables: one per grid cell and tile type
+    num_vars = rows * rows * num_tiles
+    clauses: list[str] = []
+
+    # on each position (i,j), exactly one tile t is placed
+    for i in range(rows):
+        for j in range(rows):
+            # at least one tile t is placed at (i,j)
+            at_least_one = []
+            for t in range(num_tiles):
+                vname = var_name(i, j, t)
+                at_least_one.append(str(vname))
+            clauses.append(" ".join(at_least_one) + " 0")
+
+            # at most one tile t is placed at (i,j)
+            for t1 in range(num_tiles):
+                for t2 in range(t1 + 1, num_tiles):
+                    vname1 = var_name(i, j, t1)
+                    vname2 = var_name(i, j, t2)
+                    clauses.append(f"-{vname1} -{vname2} 0")
+
+    # check neighboring tiles for edge colour matching
+    for i in range(rows):
+        for j in range(rows):
+            for t1 in range(num_tiles):
+                tile1 = tiles[t1]
+                # right neighbor
+                if j + 1 < rows:
+                    for t2 in range(num_tiles):
+                        tile2 = tiles[t2]
+                        if tile1[1] != tile2[3]:
+                            vname1 = var_name(i, j, t1)
+                            vname2 = var_name(i, j + 1, t2)
+                            clauses.append(f"-{vname1} -{vname2} 0")
+                # bottom neighbor
+                if i + 1 < rows:
+                    for t2 in range(num_tiles):
+                        tile2 = tiles[t2]
+                        if tile1[2] != tile2[0]:
+                            vname1 = var_name(i, j, t1)
+                            vname2 = var_name(i + 1, j, t2)
+                            clauses.append(f"-{vname1} -{vname2} 0")
+
+    dimacs_lines = [f"p cnf {num_vars} {len(clauses)}"]
+    dimacs_lines.extend(clauses)
+    dimacs = "\n".join(dimacs_lines) + "\n"
+
+    return dimacs
 
 
-def call_glucose(cnf_path: Path) -> tuple[bool, list[int]]:
-    """Find the Glucose executable in the project root and call it on `cnf_path`.
+def call_glucose(k: int, num_tiles: int) -> tuple[bool, list[list[int]], str]:
+    # Invoke the `glucose-syrup` binary located in the project root and pass
+    # the default CNF file name `output.cnf`. Capture the solver output and
+    # decode any model lines that start with 'v '. Return a 2D model (or an
+    # empty list on parse failure) to avoid type mismatches in callers.
+    project_root = Path(__file__).resolve().parent
+    bin_path = project_root / "glucose-syrup"
 
-    Returns (is_sat, model_list) where model_list is a list of integers (literals)
-    as returned by the solver (positive numbers mean variable true).
-    If Glucose cannot be found or an error occurs the function returns (False, []).
-    """
-    # Locate glucose in the project root (same directory as this script)
-    root = Path(__file__).resolve().parent
-    candidates = [root / "glucose", root / "glucose.exe", root / "glucose-syrup", root / "glucose-syrup.exe"]
-    gs_dir = root / "glucose-syrup"
-    if gs_dir.is_dir():
-        for p in gs_dir.iterdir():
-            if p.is_file() and "glucose" in p.name.lower():
-                candidates.append(p)
+    proc = subprocess.run([str(bin_path), "-model", "output.cnf"],
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT,
+                          text=True,
+                          cwd=project_root,
+                          check=False)
 
-    bin_path = None
-    for c in candidates:
-        if c.exists() and os.access(c, os.X_OK):
-            bin_path = c
+    output = proc.stdout or ""
+
+    # Determine satisfiability from solver output
+    is_sat = False
+    for line in output.splitlines():
+        if line.startswith("s SATISFIABLE"):
+            is_sat = True
+            break
+        elif line.startswith("s UNSATISFIABLE"):
+            is_sat = False
             break
 
-    if bin_path is None:
-        print("Glucose executable not found in project root; looked for: {}".format(
-            ", ".join(str(x) for x in candidates)), file=sys.stderr)
-        return False, []
+    if not is_sat:
+        return is_sat, [], output
 
+    # Collect all 'v' lines and join their contents into a single text blob
+    v_parts: list[str] = []
+    for line in output.splitlines():
+        if line.startswith("v "):
+            v_parts.append(line[2:].strip())
+    v_text = " ".join(v_parts)
+
+    model: list[list[int]] = []
     try:
-        # Call glucose. Many versions accept the CNF file as the single arg.
-        proc = subprocess.run([str(bin_path), str(cnf_path)], capture_output=True, text=True, timeout=60)
-    except Exception as e:
-        print(f"Error running Glucose: {e}", file=sys.stderr)
-        return False, []
+        model = solve_instance(v_text, k, num_tiles)
+    except Exception:
+        model = []
 
-    out = proc.stdout or ""
-    # Parse output: look for 's SATISFIABLE' / 's UNSATISFIABLE' and 'v' lines
-    sat = None
-    model_literals: list[int] = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("s "):
-            if "UNSAT" in line.upper():
-                sat = False
-            elif "SAT" in line.upper():
-                sat = True
-        elif line.startswith("v "):
-            parts = line.split()[1:]
-            for p in parts:
-                try:
-                    lit = int(p)
-                except ValueError:
-                    continue
-                if lit == 0:
-                    continue
-                model_literals.append(lit)
-
-    # If solver printed model on stderr (some builds), also check stderr
-    if not model_literals and proc.stderr:
-        for line in proc.stderr.splitlines():
-            line = line.strip()
-            if line.startswith("v "):
-                parts = line.split()[1:]
-                for p in parts:
-                    try:
-                        lit = int(p)
-                    except ValueError:
-                        continue
-                    if lit == 0:
-                        continue
-                    model_literals.append(lit)
-
-    if sat is None:
-        # fallback: if any model literals seen, assume SAT
-        sat = bool(model_literals)
-
-    return bool(sat), model_literals
+    return is_sat, model, output
 
 
-def solve_instance(instance: dict, k: int):
-    """Encode instance to DIMACS, call Glucose, and translate model to tiling.
+def solve_instance(v_text: str, k: int, tiles: int) -> list[list[int]]:
+    w_t = max(1, math.ceil(math.log10(tiles)))
+    w_i = max(1, math.ceil(math.log10(k)))
+    w_j = max(1, math.ceil(math.log10(k)))
+    model = [[0 for _ in range(k)] for _ in range(k)]
 
-    Returns (sat_bool, tiling_matrix_or_None)
-    """
-    dimacs_str, var_mapping = encode_instance_to_dimacs(instance, k)
-
-    # write dimacs to a temporary file
-    tmp = None
-    try:
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".cnf") as f:
-            f.write(dimacs_str)
-            tmp = Path(f.name)
-
-        sat, model = call_glucose(tmp)
-    finally:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
-
-    if not sat:
-        return False, None
-
-    # Build reverse mapping from varnum -> (i,j,t_index)
-    rev = {v: coords for coords, v in var_mapping.items()}
-
-    # Initialize tiling with None
-    tiling = [[None for _ in range(k)] for _ in range(k)]
-    if model:
-        for lit in model:
-            if lit <= 0:
-                continue
-            coords = rev.get(lit)
-            if coords is None:
-                continue
-            i, j, t_index = coords
-            # place tile index
-            if 0 <= i < k and 0 <= j < k:
-                tiling[i][j] = t_index
-
-    return True, tiling
-
+    for num in v_text.split():
+        val = int(num)
+        if val > 0:
+            print(num)
+            s = str(val).zfill(w_i + w_j + w_t)
+            i = int(s[0:w_i]) - 1
+            j = int(s[w_i:w_i + w_j]) - 1
+            # compute t now so we can store it immediately (the original t=... line
+            # that follows will simply overwrite with the same value)
+            t = int(s[w_i + w_j:])
+            model[i][j] = t
+    return model
 
 def parse_instance(raw: str) -> dict:
     lines = [l.strip() for l in raw.splitlines() if l.strip()]
@@ -225,6 +220,8 @@ def parse_args(argv):
     p = argparse.ArgumentParser()
     p.add_argument("k", type=int)
     p.add_argument("input_file", type=Path)
+    p.add_argument("--dimacs-out", type=Path,
+                   help="optional path to write DIMACS CNF (UTF-8) and exit")
     p.add_argument("--print-dimacs", action="store_true")
     return p.parse_args(argv)
 
@@ -244,35 +241,53 @@ def main(argv=None):
 
     instance = parse_instance(raw)
 
-    if args.print_dimacs:
-        print(prepare_dimacs(raw, args.k))
+    # Always produce DIMACS encoding for the instance; by default write it
+    # to `output.cnf` in the project directory so it can be inspected or
+    # passed to the `glucose-syrup` binary. The `--dimacs-out` flag still
+    # allows writing to a custom path and exiting early.
+    dimacs = prepare_dimacs(raw, args.k)
+
+    if args.dimacs_out:
+        try:
+            args.dimacs_out.write_text(dimacs, encoding='utf-8')
+            print(f"Wrote DIMACS to {args.dimacs_out}")
+        except Exception as e:
+            print(
+                f"Failed to write DIMACS to {args.dimacs_out}: {e}", file=sys.stderr)
+            return 2
         return 0
 
-    sat, tiling = solve_instance(instance, args.k)
-    if not sat:
+    # default output path is `output.cnf` next to this script
+    project_root = Path(__file__).resolve().parent
+    default_cnf = project_root / "output.cnf"
+    try:
+        default_cnf.write_text(dimacs, encoding='utf-8')
+        # print(f"Wrote DIMACS to {default_cnf}")
+    except Exception as e:
+        print(f"Failed to write DIMACS to {default_cnf}: {e}", file=sys.stderr)
+        return 2
+
+    if args.print_dimacs:
+        print(dimacs)
+        return 0
+
+    # Call the external solver and show its output. The solver prints
+    # detailed logs; when it reports SAT we print that output and exit
+    # with the conventional exit code (10 for SAT, 20 for UNSAT).
+    num_tiles = len(instance.get("tiles", []))
+    is_sat, model, _ = call_glucose(args.k, num_tiles)
+
+    if not is_sat:
         print("s UNSATISFIABLE")
         return 20
 
-    # succeeded: print simple human-readable tiling
+    # Solver reports SAT. Currently model decoding into an actual tiling
+    # is not implemented, so just report satisfiable and exit 10.
     print("s SATISFIABLE")
-    colors_map = instance.get('colors', {})
-    inv_colors = {v: k for k, v in colors_map.items()}
-    tiles = instance.get('tiles', [])
-    assert tiling is not None
-    for i in range(args.k):
-        row = []
-        for j in range(args.k):
-            t = tiling[i][j]
-            if t is None:
-                row.append(".")
-            else:
-                # represent tile by its 4 colours
-                cols = tiles[t]
-                names = [inv_colors.get(x, str(x)) for x in cols]
-                row.append("<" + ",".join(names) + ">")
-        print(" ".join(row))
-
-    return 0
+    print("Model:")
+    for row in model:
+        print(" ".join(str(t) for t in row))
+    return 10
 
 
 if __name__ == "__main__":
