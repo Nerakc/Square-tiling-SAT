@@ -54,7 +54,8 @@ def encode_instance_to_dimacs(instance: dict, k: int) -> str:
         return f"{si}{sj}{st}"
 
     # number of propositional variables: one per grid cell and tile type
-    num_vars = rows * rows * num_tiles
+    # because of our usage of named variables the number is actually the largest name
+    num_vars = 0
     clauses: list[str] = []
 
     # on each position (i,j), exactly one tile t is placed
@@ -63,11 +64,13 @@ def encode_instance_to_dimacs(instance: dict, k: int) -> str:
             at_least_one = [var_name(i, j, t) for t in range(num_tiles)]
             if at_least_one:
                 clauses.append(" ".join(at_least_one) + " 0")
+            num_vars = max(num_vars, int(at_least_one[-1]))
             for t1 in range(num_tiles):
                 for t2 in range(t1 + 1, num_tiles):
                     vname1 = var_name(i, j, t1)
                     vname2 = var_name(i, j, t2)
                     clauses.append(f"-{vname1} -{vname2} 0")
+                    num_vars = max(num_vars, int(vname1), int(vname2))
 
     # adjacency constraints: enforce matching edge colours between neighbours
     for i in range(rows):
@@ -82,6 +85,7 @@ def encode_instance_to_dimacs(instance: dict, k: int) -> str:
                             vname1 = var_name(i, j, t1)
                             vname2 = var_name(i, j + 1, t2)
                             clauses.append(f"-{vname1} -{vname2} 0")
+                            num_vars = max(num_vars, int(vname1), int(vname2))
                 # bottom neighbor
                 if i + 1 < rows:
                     for t2 in range(num_tiles):
@@ -90,6 +94,7 @@ def encode_instance_to_dimacs(instance: dict, k: int) -> str:
                             vname1 = var_name(i, j, t1)
                             vname2 = var_name(i + 1, j, t2)
                             clauses.append(f"-{vname1} -{vname2} 0")
+                            num_vars = max(num_vars, int(vname1), int(vname2))
 
     dimacs_lines = [f"p cnf {num_vars} {len(clauses)}"]
     dimacs_lines.extend(clauses)
@@ -142,6 +147,66 @@ def call_glucose(k: int, num_tiles: int) -> tuple[bool, list[list[int]], str]:
         model = []
 
     return is_sat, model, output
+
+
+def parse_solver_stats(output: str) -> dict:
+    """Parse common solver statistics from Glucose/MiniSat-like output.
+
+    Returns a dict with any of the keys: 'restarts', 'conflicts', 'decisions',
+    'propagations', 'conflict_literals', 'memory_mb', 'cpu_seconds'. Values
+    are ints for counts and floats for memory/time when available.
+    """
+    stats: dict = {}
+
+    def to_int(s: str) -> int:
+        return int(s.replace(",", ""))
+
+    # Common patterns
+    patterns = [
+        (r"restarts?\s*[:=]\s*(\d+)", 'restarts', int),
+        (r"conflicts?\s*[:=]\s*([\d,]+)", 'conflicts', to_int),
+        (r"decisions?\s*[:=]\s*([\d,]+)", 'decisions', to_int),
+        (r"propagations?\s*[:=]\s*([\d,]+)", 'propagations', to_int),
+        (r"conflict literals?\s*[:=]\s*([\d,]+)", 'conflict_literals', to_int),
+        (r"Memory used\s*[:=]\s*([\d.]+)\s*MB", 'memory_mb', float),
+        (r"Memory\s*[:=]\s*([\d.]+)\s*MB", 'memory_mb', float),
+        (r"CPU time\s*[:=]\s*([\d.]+)\s*s", 'cpu_seconds', float),
+        (r"CPU time\s*[:=]\s*([\d.]+)\s*sec", 'cpu_seconds', float),
+        (r"Time\s*[:=]\s*([\d.]+)\s*s", 'cpu_seconds', float),
+        (r"solving time\s*[:=]\s*([\d.]+)\s*s", 'cpu_seconds', float),
+    ]
+
+    for line in output.splitlines():
+        l = line.strip()
+        for pat, key, caster in patterns:
+            m = re.search(pat, l, flags=re.IGNORECASE)
+            if m:
+                try:
+                    stats[key] = caster(m.group(1))
+                except Exception:
+                    # ignore casting errors
+                    pass
+
+    return stats
+
+
+def print_solver_stats(stats: dict) -> None:
+    if not stats:
+        print("Solver statistics: (none found)")
+        return
+    print("Solver statistics:")
+    order = [
+        ('restarts', 'Restarts'),
+        ('conflicts', 'Conflicts'),
+        ('decisions', 'Decisions'),
+        ('propagations', 'Propagations'),
+        ('conflict_literals', 'Conflict literals'),
+        ('memory_mb', 'Memory (MB)'),
+        ('cpu_seconds', 'CPU time (s)'),
+    ]
+    for key, label in order:
+        if key in stats:
+            print(f"- {label}: {stats[key]}")
 
 
 def solve_instance(v_text: str, k: int, tiles: int) -> list[list[int]]:
@@ -207,6 +272,8 @@ def parse_args(argv):
     p.add_argument("--dimacs-out", type=Path,
                    help="optional path to write DIMACS CNF (UTF-8) and exit")
     p.add_argument("--print-dimacs", action="store_true")
+    p.add_argument("--solver-stats", action="store_true",
+                   help="print solver statistics parsed from glucose output")
     return p.parse_args(argv)
 
 
@@ -248,9 +315,14 @@ def main(argv=None):
     if args.print_dimacs:
         print(dimacs)
 
-    # Call the external solver and show its output.
+    # Call the external solver and capture its output.
     num_tiles = len(instance.get("tiles", []))
-    is_sat, model, _ = call_glucose(args.k, num_tiles)
+    is_sat, model, output = call_glucose(args.k, num_tiles)
+
+    # If requested, parse and print solver statistics from the solver output.
+    if getattr(args, 'solver_stats', False):
+        stats = parse_solver_stats(output)
+        print_solver_stats(stats)
 
     if not is_sat:
         print("s UNSATISFIABLE")
