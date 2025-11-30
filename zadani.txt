@@ -1,0 +1,29 @@
+Name: Square-Tiling [GP13] 5
+
+Input: A set C of n `colours'; a collection of tiles, T, each tile t being a 4-tuple < a,b,c,d> of colours where a is the colour at the top of the tile; b that on the right-hand side; c that at the bottom; and d that on the left-hand side of the tile; a positive integer k<=n.
+
+Question: Is there a proper tiling of a k by k square using the tiles in T, i.e. an assignment of a tile A(i,j) in T to each ordered pair (i,j) with 1<=i<=k, 1<=j<=k such that both of the following hold:
+
+If A(i,j)=< a,b,c,d> and A(i+1,j)=< e,f,g,h> then the colours b and h are identical.
+If A(i,j)=< a,b,c,d> and A(i,j+1)=< e,f,g,h> then the colours c and e are identical?
+Comments: Informally, a proper tiling is one in which two tiles which are next to each other are required to have the same colour on touching sides, i.e. the right-hand side of one is coloured the same as the left-hand side of its neighbour and similarly with vertically adjacent tiles: the lower side of one is coloured the same as the top side of its neighbour. Decision problems involving questions about tiling patterns tend to be extremely difficult. For the most general form of the question it can be proven that no algorithm at all exists to solve it, i.e. not even an extremely inefficient one. A tiling problem also constitutes the only known `natural' `hard' member of the following class of problems: given a positive integer n as input, determine the number of `objects' of `size' n having a particular property, e.g. the number of n-node graphs, or the number of n-node graphs with a Hamiltonian circuit.
+
+
+
+
+
+K řešení použijte programovací jazyk Python 3 a SAT solver Glucose 4.2. Nepoužívejte žádné knihovny, které umí převádět formule do CNF apod.
+
+Naprogramujte skript, který:
+
+na vstupu přijme instanci problému (buď parametry, nebo cestu k souboru popisujícímu instanci, případně kombinaci obojího),
+zakóduje tuto instanci do SAT ve formátu DIMACS CNF,
+zavolá na CNF formuli SAT solver Glucose,
+dekóduje nalezené ohodnocení proměnných (existuje-li) zpět na řešení daného problému,
+toto řešení vypíše v nějakém rozumném, člověkem čitelném formátu.
+Skript navíc volitelně vypíše zkonstruovanou CNF formuli v DIMACS CNF formátu, a statistiky o průběhu řešení SAT solveru.
+K řešení přiložte několik instancí, a to alespoň:
+
+malou, člověkem analyzovatelnou splnitelnou instanci,
+malou, člověkem analyzovatelnou nesplnitelnou instanci (existuje-li),
+splnitelnou instanci, která poběží netriviálně dlouho (alespoň 10s), pokud se Vám ji nepodaří nalézt, popište vaše snažení.

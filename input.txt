@@ -1,0 +1,3 @@
+4
+red green blue, yellow
+<red,red,red,red>
