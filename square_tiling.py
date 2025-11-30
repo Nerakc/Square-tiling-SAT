@@ -4,10 +4,7 @@ from pathlib import Path
 import argparse
 import sys
 import subprocess
-import tempfile
-import os
 import re
-import math
 
 
 def read_instance_file(path: Path) -> str:
@@ -24,37 +21,26 @@ def prepare_dimacs(raw_instance: str, k: int) -> str:
 
 
 def encode_instance_to_dimacs(instance: dict, k: int) -> str:
-    """Encode the instance into DIMACS CNF and return (dimacs_str, mapping).
+    """Encode the instance into a DIMACS-like CNF text string.
 
-    For now this constructs variable names for the facts "on tile(i,j) is tile t"
-    using the convention <zeropadded_i><zeropadded_j><zeropadded_t> where the
-    padding widths are computed as follows (per user request):
-      - i and j are padded to ceil(log10(number of rows))
-      - t is padded to ceil(log10(number of colors))
-
-    The function returns an empty CNF (no clauses) together with a mapping
-    from variable name to DIMACS variable id. This is the first step requested
-    (variable naming / mapping); clause generation will be added later.
+    Variables are named using zero-padded indices for row, column and tile
+    (each using 1-based values). The returned string is a text CNF where
+    variable tokens are these padded names (follow-up tools may translate
+    them to numeric DIMACS IDs if needed).
     """
 
-    # number of rows in the square grid
     rows = int(k)
-    # number of colours declared in the instance (may be 0)
-    num_colors = max(1, len(instance.get("colors", {})))
-    # number of tile types provided by the instance
     tiles = instance.get("tiles", [])
     num_tiles = max(0, len(tiles))
 
-    def _pad_width(n: int) -> int:
-        # follow the formula ceil(log10(n)) but ensure at least 1
-        if n <= 1:
+    def digits(n: int) -> int:
+        if n <= 0:
             return 1
-        return max(1, math.ceil(math.log10(n)))
+        return len(str(n))
 
-    w_i = _pad_width(rows+1)
-    w_j = _pad_width(rows+1)
-    # per the user's instruction use number of colours to size the tile index
-    w_t = _pad_width(num_colors+1)
+    w_i = digits(rows)
+    w_j = digits(rows)
+    w_t = digits(num_tiles)
 
     def var_name(i: int, j: int, t: int) -> str:
         """Return the variable name for position (i,j) and tile index t.
@@ -74,21 +60,16 @@ def encode_instance_to_dimacs(instance: dict, k: int) -> str:
     # on each position (i,j), exactly one tile t is placed
     for i in range(rows):
         for j in range(rows):
-            # at least one tile t is placed at (i,j)
-            at_least_one = []
-            for t in range(num_tiles):
-                vname = var_name(i, j, t)
-                at_least_one.append(str(vname))
-            clauses.append(" ".join(at_least_one) + " 0")
-
-            # at most one tile t is placed at (i,j)
+            at_least_one = [var_name(i, j, t) for t in range(num_tiles)]
+            if at_least_one:
+                clauses.append(" ".join(at_least_one) + " 0")
             for t1 in range(num_tiles):
                 for t2 in range(t1 + 1, num_tiles):
                     vname1 = var_name(i, j, t1)
                     vname2 = var_name(i, j, t2)
                     clauses.append(f"-{vname1} -{vname2} 0")
 
-    # check neighboring tiles for edge colour matching
+    # adjacency constraints: enforce matching edge colours between neighbours
     for i in range(rows):
         for j in range(rows):
             for t1 in range(num_tiles):
@@ -164,23 +145,26 @@ def call_glucose(k: int, num_tiles: int) -> tuple[bool, list[list[int]], str]:
 
 
 def solve_instance(v_text: str, k: int, tiles: int) -> list[list[int]]:
-    w_t = max(1, math.ceil(math.log10(tiles)))
-    w_i = max(1, math.ceil(math.log10(k)))
-    w_j = max(1, math.ceil(math.log10(k)))
+    def digits(n: int) -> int:
+        if n <= 0:
+            return 1
+        return len(str(n))
+
+    w_t = digits(tiles)
+    w_i = digits(k)
+    w_j = digits(k)
     model = [[0 for _ in range(k)] for _ in range(k)]
 
     for num in v_text.split():
         val = int(num)
         if val > 0:
-            print(num)
             s = str(val).zfill(w_i + w_j + w_t)
             i = int(s[0:w_i]) - 1
             j = int(s[w_i:w_i + w_j]) - 1
-            # compute t now so we can store it immediately (the original t=... line
-            # that follows will simply overwrite with the same value)
             t = int(s[w_i + w_j:])
             model[i][j] = t
     return model
+
 
 def parse_instance(raw: str) -> dict:
     lines = [l.strip() for l in raw.splitlines() if l.strip()]
@@ -241,10 +225,6 @@ def main(argv=None):
 
     instance = parse_instance(raw)
 
-    # Always produce DIMACS encoding for the instance; by default write it
-    # to `output.cnf` in the project directory so it can be inspected or
-    # passed to the `glucose-syrup` binary. The `--dimacs-out` flag still
-    # allows writing to a custom path and exiting early.
     dimacs = prepare_dimacs(raw, args.k)
 
     if args.dimacs_out:
@@ -257,23 +237,18 @@ def main(argv=None):
             return 2
         return 0
 
-    # default output path is `output.cnf` next to this script
     project_root = Path(__file__).resolve().parent
     default_cnf = project_root / "output.cnf"
     try:
         default_cnf.write_text(dimacs, encoding='utf-8')
-        # print(f"Wrote DIMACS to {default_cnf}")
     except Exception as e:
         print(f"Failed to write DIMACS to {default_cnf}: {e}", file=sys.stderr)
         return 2
 
     if args.print_dimacs:
         print(dimacs)
-        return 0
 
-    # Call the external solver and show its output. The solver prints
-    # detailed logs; when it reports SAT we print that output and exit
-    # with the conventional exit code (10 for SAT, 20 for UNSAT).
+    # Call the external solver and show its output.
     num_tiles = len(instance.get("tiles", []))
     is_sat, model, _ = call_glucose(args.k, num_tiles)
 
@@ -281,8 +256,7 @@ def main(argv=None):
         print("s UNSATISFIABLE")
         return 20
 
-    # Solver reports SAT. Currently model decoding into an actual tiling
-    # is not implemented, so just report satisfiable and exit 10.
+    # Solver reports SAT. Decoded model is printed below.
     print("s SATISFIABLE")
     print("Model:")
     for row in model:
