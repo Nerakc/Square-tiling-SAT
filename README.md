@@ -69,3 +69,4 @@ wsl bash -lc "time python3 ./square_tiling.py 8 ./instances/non-trivial.txt --so
 ```
   - Výsledek: instance byla vyřešena jako SAT velmi rychle (reálný čas ~0.42 s na mém stroji, solver reportoval CPU time ≈ 0.285 s). Takže tato instance NESPLOŇUJE požadavek „běží alespoň 10s". Pro dosažení požadovaného výsledku jsem musel navýšit `k` alespoň na 50, kdy doba běhu vzrostla na ~14s.
   - Pro vstupy s jednou dlaždicí hlásil `glucose-syrup` chybu `floating point exception (core dumped)` — proto je třeba mít alespoň dva typy dlaždic. Problém se mi nepodařilo dále analyzovat.
+  - Script jsem testoval na `non-trivial.txt` s `k=150` což vedlo k ~40s době běhu a pak s `k=200` což již můj stroj nezvládl.
